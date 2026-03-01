@@ -6,6 +6,10 @@
 #include <sys/wait.h>
 #include <termios.h> // termios, TCSANOW, ECHO, ICANON
 #include <unistd.h>
+#include <fcntl.h> //file I/O
+#include <sys/stat.h> //mkdir and mkfifo
+#include <dirent.h> //opendir ve readdir
+#include <signal.h> //kill
 const char *sysname = "shellish";
 
 enum return_codes {
@@ -330,6 +334,142 @@ char* resolve_path(char* cmd) {
 	dir = strtok(NULL, ":");
 }
 }
+// Part 3: Implementing chatroom command as a builtin
+void builtin_chatroom(struct command_t *command) {
+ if (command->arg_count < 3) {
+	fprintf(stderr, "chatroom <roomname> <username>\n");
+	return;}
+	char *roomname = command->args[1];
+	char *username = command->args[2];
+
+	char room_dir[512];
+	char my_pipe[1024];
+
+	snprintf(room_dir,sizeof(room_dir),"/tmp/chatroom-%s",roomname);
+	snprintf(my_pipe, sizeof(my_pipe), "%s/%s", room_dir, username);
+
+	mkdir(room_dir, 0777);
+	mkfifo(my_pipe,0666);
+	printf("roomname: %s \n",roomname);
+
+	pid_t receiver_pid = fork();
+	if (receiver_pid == 0) {
+	int fd = open(my_pipe, O_RDWR);
+	if (fd < 0) {
+	perror("pipe cannot open");
+	exit(1);
+	}
+	char buffer[4096];
+	while (1) {
+		int n = read(fd, buffer,sizeof(buffer)-1);
+		if (n >0) {
+		buffer[n] = '\0';
+		printf("\r\033[K%s\n[%s] %s > ", buffer, roomname, username);
+		fflush(stdout);
+		}
+	}
+	exit(0);
+	} else {
+	char msg[2048];
+	char full_msg[4096];
+
+	while (1) {
+		printf("[%s] %s > ", roomname,username);
+		fflush(stdout);
+		if (fgets(msg, sizeof(msg), stdin) == NULL) break;
+		msg[strcspn(msg, "\n")] = 0;
+
+		if (strcmp(msg, "exit") == 0) break;
+		if(strlen(msg) == 0) continue;
+
+		snprintf(full_msg, sizeof(full_msg), "[%s] %s: %s",roomname,username,msg);
+	DIR *dir = opendir(room_dir);
+	if (dir != NULL) {
+		struct dirent  *entry;
+		while ((entry = readdir(dir)) != NULL) {
+		if (strcmp(entry->d_name, ".") == 0 ||
+		strcmp(entry->d_name,"..") == 0 ||
+		strcmp(entry->d_name,username) == 0) {
+		continue;
+		}
+
+		pid_t writer_pid = fork();
+		if (writer_pid == 0) {
+		char target_pipe[1024];
+		snprintf(target_pipe,sizeof(target_pipe),"%s/%s",room_dir,entry->d_name);
+
+		int fd = open(target_pipe, O_WRONLY | O_NONBLOCK);
+		if (fd >= 0) {
+			write(fd,full_msg,strlen(full_msg));
+			close(fd);
+		}
+		exit(0);
+		} else{
+			waitpid(writer_pid,NULL,0);
+		}
+		}
+		closedir(dir);
+	}
+	}
+	kill(receiver_pid,SIGTERM);
+	waitpid(receiver_pid,NULL,0);
+	unlink(my_pipe);
+	}
+	}
+
+// Part 3: Implementing cut command as a builtin
+void builtin_cut(struct command_t *command){
+	char delim = '\t';
+	char *fields_str = NULL;
+	
+	for (int i = 1; i < command->arg_count; i++){
+	if(strcmp(command->args[i], "-d") == 0 && i + 1 < command->arg_count){
+	delim = command->args[i+1][0];
+	i++; }
+	else if (strcmp(command->args[i], "-f") == 0 && i + 1 < command->arg_count) {
+	fields_str = command->args[i+1];
+	i++;}
+	}
+	if (!fields_str) {
+	fprintf(stderr, "cut: -f mandotary (-f1,2)\n");
+	return;}
+
+	int print_field[100] = {0};
+	char *f_copy = strdup(fields_str);
+	char *token = strtok(f_copy, ",");
+	while(token) {
+		int f = atoi(token);
+		if (f > 0 && f < 100) print_field[f] = 1;
+		token = strtok(NULL, ",");
+		}
+	free(f_copy);
+
+	char line[4096];
+	while (fgets(line, sizeof(line), stdin)) {
+		line[strcspn(line, "\n")] = 0;
+
+		char *p = line;
+		int current_field = 1;
+		int first_printed = 1;
+
+		while (*p) {
+			char *next = strchr(p, delim);
+			if (next) *next = '\0';
+
+			if (print_field[current_field]) {
+				if (!first_printed) printf("%c",delim);
+				printf("%s",p);
+				first_printed = 0;
+	}
+
+	if (!next) break;
+	p = next + 1;
+	current_field++;
+	}
+	printf("\n");
+	}
+}
+
 int process_command(struct command_t *command) {
   int r;
   if (strcmp(command->name, "") == 0)
@@ -347,6 +487,36 @@ int process_command(struct command_t *command) {
     }
   }
 
+  if (command->next != NULL) {
+	int pipefd[2];
+	if (pipe(pipefd) < 0) {
+	perror("No pipe");
+	return SUCCESS;
+	}
+  pid_t pid1 = fork();
+  if (pid1 == 0) {
+	dup2(pipefd[1] , STDOUT_FILENO);
+	close(pipefd[0]);
+	close(pipefd[1]);
+	command->next = NULL;
+	exit(process_command(command));
+	}
+
+ pid_t pid2 = fork();
+ if (pid2 == 0) {
+	dup2(pipefd[0],STDIN_FILENO);
+	close(pipefd[1]);
+	close(pipefd[0]);
+	exit(process_command(command->next));
+}
+ close(pipefd[0]);
+ close(pipefd[1]);
+ waitpid(pid1, NULL, 0);
+ waitpid(pid2, NULL, 0);
+ return SUCCESS;
+}
+
+
   pid_t pid = fork();
   if (pid == 0) // child
   {
@@ -358,16 +528,57 @@ int process_command(struct command_t *command) {
     // add a NULL argument to the end of args, and the name to the beginning
     // as required by exec
 
+    // PART 2: handle redirections
+    if (command->redirects[0] != NULL) {
+      int fd_in = open(command-> redirects[0], O_RDONLY);
+      if ( fd_in < 0) { perror("input file cannot open"); exit(1);}
+      dup2(fd_in,STDIN_FILENO);
+      close(fd_in);
+    }
+
+    if (command-> redirects[1] != NULL) {
+      int fd_out = open(command->redirects[1], O_WRONLY | O_CREAT | O_TRUNC,0666);
+      if (fd_out < 0 ) { perror("output file cannot open"); exit(1);}
+      dup2(fd_out, STDOUT_FILENO);
+      close(fd_out);
+    }
+    
+    if (command -> redirects[2] != NULL) {
+      int fd_app = open(command->redirects[2], O_WRONLY | O_CREAT | O_APPEND, 0666);
+      if (fd_app < 0 ) { perror("file cannot open"); exit(1);}
+      dup2(fd_app, STDOUT_FILENO);
+      close(fd_app);
+    }
+
+    if (strcmp(command->name, "cut") == 0) {
+	builtin_cut(command);
+	exit(0);
+ }
+  if (strcmp(command->name, "chatroom") == 0){
+	builtin_chatroom(command);
+	exit(0);
+	}
+
     // TODO: do your own exec with path resolving using execv()
-    // do so by replacing the execvp call below
-    execvp(command->name, command->args); // exec+args+path
-    printf("-%s: %s: command not found\n", sysname, command->name);
+    // PART 1: execv with path resolving
+    char *full_path = resolve_path(command->name);
+    if (full_path != NULL) {
+	execv(full_path, command->args);
+	free(full_path);
+    } else{
+	printf("-%s: %s: command not found\n",sysname, command->name);
+    }
     exit(127);
-  } else {
-    // TODO: implement background processes here
-    wait(0); // wait for child process to finish
-    return SUCCESS;
+  }  
+  else if (pid > 0) {
+    if (!command->background) {
+	waitpid(pid, NULL,0);
+    } else {
+	printf("[%d] start with background\n", pid);
+    }
+	return SUCCESS;
   }
+  return SUCCESS;
 }
 
 int main() {
