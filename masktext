@@ -1,0 +1,15 @@
+#! /usr/bin/env python3
+import sys
+import re
+
+if len(sys.argv) < 2:
+	print("Usage: masktext masked text")
+	sys.exit(1)
+text = " ".join(sys.argv[1:])
+
+
+text = re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+','***@***.***',text)
+
+text = re.sub(r'\b\d{10,11}\b', '***-***-****',text)
+
+print(text)
