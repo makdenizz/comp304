@@ -305,7 +305,31 @@ int prompt(struct command_t *command) {
   tcsetattr(STDIN_FILENO, TCSANOW, &backup_termios);
   return SUCCESS;
 }
+//New Function For Part 1:
+char* resolve_path(char* cmd) {
+	if (strchr(cmd, '/')) {
+		if (access(cmd, X_OK) == 0) return strdup(cmd);
+		return NULL;
+	}
+	char* path_env = getenv("PATH");
+	if (!path_env) return NULL;
 
+	char* path_copy = strdup(path_env);
+
+	char* dir = strtok(path_copy, ":");
+	
+	while (dir != NULL) {
+	char* full_path = malloc(strlen(dir) + strlen(cmd) +2);
+	sprintf(full_path, "%s/%s",dir,cmd);
+
+	if (access(full_path, X_OK) == 0) {
+		free(path_copy);
+		return full_path;
+	}
+	free(full_path);
+	dir = strtok(NULL, ":");
+}
+}
 int process_command(struct command_t *command) {
   int r;
   if (strcmp(command->name, "") == 0)
