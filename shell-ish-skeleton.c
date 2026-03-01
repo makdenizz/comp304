@@ -549,7 +549,7 @@ int process_command(struct command_t *command) {
       dup2(fd_app, STDOUT_FILENO);
       close(fd_app);
     }
-
+//Part 3: Implementing cut command and chatroom and masktext
     if (strcmp(command->name, "cut") == 0) {
 	builtin_cut(command);
 	exit(0);
@@ -557,6 +557,12 @@ int process_command(struct command_t *command) {
   if (strcmp(command->name, "chatroom") == 0){
 	builtin_chatroom(command);
 	exit(0);
+	}
+  if (strcmp(command->name, "masktext") == 0) {
+	execv("./masktext",command->args);
+
+	perror("cannot run maskedtext");
+	exit(1);
 	}
 
     // TODO: do your own exec with path resolving using execv()
